@@ -238,26 +238,36 @@ def ranges_for_read(
             buffers.add(Buffer(start, size))
             # print(result)
         else:
-            # Now we iterate through the buffers, filling in holes with new buffers as necessary
-            if start < buffers[0].start:
-                buffers.add(Buffer(start, buffers[0].start - start))
+            # dummy buffers, to see where we land
+            start_idx = buffers.bisect_left(Buffer(start, 0))
 
-            start_idx = buffers.bisect_left(
-                Buffer(start, 0)
-            )  # dummy buffers, to see where we land
+            if start < buffers[start_idx].start:
+                buffers.add(Buffer(start, min(end - start + 1, buffers[start_idx].start - start)))
+
+            end_idx = buffers.bisect_left(Buffer(end, 0)) - 1
+            if buffers[end_idx].end < end:
+                buffers.add(Buffer(buffers[end_idx].end, end - buffers[end_idx].end))
+
+            # dummy buffers, to see where we land
+            start_idx = buffers.bisect_left(Buffer(start, 0))
             end_idx = buffers.bisect_left(Buffer(end, 0)) - 1
 
             # TODO: test / handle cases with len(buffers) < 3
+            i = 0
             while not done(buffers, start, end, start_idx, end_idx):
+                # fill holes
                 for a, b in pairwise(buffers):
                     if a.end < b.start:
-                        # fill a hole
                         buffers.add(Buffer(a.end, min(b.start - a.end, end - a.end)))
 
+                # fill end
                 start_idx = buffers.bisect_left(
                     Buffer(start, 0)
                 )  # dummy buffers, to see where we land
                 end_idx = buffers.bisect_left(Buffer(end, 0)) - 1
+                i += 1
+                if i > 100:
+                    raise RecursionError
 
 
             # # case 2: we start left of buffers, but overlap some.
