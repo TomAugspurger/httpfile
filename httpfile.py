@@ -1,9 +1,21 @@
+"""
+# httpfile
+
+This module provides a file-like object to bytes served over http.
+
+## Limitations
+
+* Servers must include a Content-Length header in the response
+* Servers must honor range-requests
+"""
 import io
 import itertools
 import logging
 
 import sortedcontainers
 import httpx
+
+__version__ = "1.0.0"
 
 
 Client = httpx.Client | httpx.AsyncClient
@@ -236,6 +248,15 @@ class HTTPFile(io.IOBase):
 
     def tell(self):
         return self._position
+
+    def close(self):
+        pass
+
+    def __enter__(self):
+        yield self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool | None:
+        pass
 
 
 # ranges, slices, etc.
