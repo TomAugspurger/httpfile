@@ -8,9 +8,12 @@ This module provides a file-like object to bytes served over HTTP.
 * Servers must include a Content-Length header in the response
 * Servers must honor range-requests
 """
+from __future__ import annotations
+
 import io
 import itertools
 import logging
+from typing import Union
 
 import sortedcontainers
 import httpx
@@ -19,7 +22,7 @@ __version__ = "1.0.0"
 logger = logging.getLogger(__name__)
 
 
-Client = httpx.Client | httpx.AsyncClient
+Client = Union[httpx.Client, httpx.AsyncClient]
 
 
 class Buffer:
