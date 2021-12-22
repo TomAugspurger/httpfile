@@ -1,6 +1,7 @@
 import io
 import typing
 import itertools
+import logging
 
 import sortedcontainers
 import httpx
@@ -9,10 +10,14 @@ import httpx
 Client = httpx.Client | httpx.AsyncClient
 
 
+logger = logging.getLogger(__name__)
+
+
 class Buffer:
     def __init__(self, start: int, size: int, data: bytes | None = None):
         self.start = start
         self.size = size
+        assert size >= 0
         if data is not None:
             assert len(data) == size
         self._data = data
@@ -36,7 +41,7 @@ class Buffer:
         return type(self) == type(other) and self.start == other.start
 
     def __repr__(self):
-        return f"Buffer<start={self.start}, end={self.end}>"
+        return f"Buffer<start={self.start}, end={self.end}, allocated={self._data is not None}>"
 
     def __len__(self):
         return self.size
@@ -45,12 +50,24 @@ class Buffer:
     def end(self):
         return self.start + len(self)
 
+    @property
+    def format_range(self):
+        return f"bytes={self.start}-{self.end - 1}"
+
 
 class HTTPFileIO:
     def __init__(self, session: Client | None = None):
         self.session: Client = session or httpx.Client()
 
-    def do_read_ranges(self, url, start, end):
+    def do_read_ranges(self, url, buffers: list[Buffer]):
+        for buffer in buffers:
+            if buffer._data is None:
+                headers = {"Range": buffer.format_range}
+                logger.debug("get - %s - %s", url, headers["Range"])
+                r = self.session.get(url, headers=headers)
+                r.raise_for_status()
+                buffer._data = r.content
+                assert len(buffer._data) == len(buffer)
         return
 
     def do_discover_length(self, url: str) -> int:
@@ -67,6 +84,7 @@ class FileFileIO:
                 buf.seek(buffer.start)
                 size = len(buffer)
                 buffer._data = buf.read(size)
+                assert len(buffer._data) == len(buffer)
 
 
 class HTTPFile(io.IOBase):
@@ -133,7 +151,9 @@ class HTTPFile(io.IOBase):
         else:
             end = self._position + size
 
+        logger.warning("read %d - %d", self._position, end)
         new_buffers = ranges_for_read(self._buffers, self._position, end)
+        # if size == 512: breakpoint()
         # ---------------------
         # this must be atomic !
         # mutates buffer's data in place
@@ -142,22 +162,48 @@ class HTTPFile(io.IOBase):
         )
         self._buffers = new_buffers
         result = self._build_result(size)
+        assert len(result) == size
         self._position += size
         # ---------------------
         return result
 
     def _build_result(self, size) -> bytes:
         start = self._position
-        start_idx = self._buffers.bisect_left(Buffer(start, 0))
-        end_idx = self._buffers.bisect_left(Buffer(start + size, 0))
+        end = self._position + size
 
-        return b"".join(b.data for b in self._buffers[start_idx:end_idx])
+        start_idx = self._buffers.bisect_right(Buffer(start, 0)) - 1
+        end_idx = self._buffers.bisect_right(Buffer(start + size, 0)) - 1
+
+        result = []
+        if start_idx == end_idx:
+            b = self._buffers[start_idx]
+            assert b.end >= (start + size)
+            result.append(b.data[start - b.start:start - b.start + size])
+
+        else:
+            buf = self._buffers[start_idx]
+            result.append(buf.data[start - buf.start:])
+
+            for buf in self._buffers[start_idx + 1:end_idx]:
+                result.append(buf.data)
+
+            buf = self._buffers[end_idx]
+            if buf.end == end:
+                result.append(buf.data)
+            else:
+                result.append(buf.data[:end - buf.end])
+
+        # if self._buffers[start_idx].start < start:
+        #     result.append(self._buffers[start_idx])
+
+        return b"".join(result)
+        # return b"".join(b.data for b in self._buffers[start_idx:end_idx])
 
     @property
     def content_length(self) -> int:
         if self._content_length is None:
             # TODO: cache the fact that we've looked this up. Use another sentinel
-            _content_length = self._io.do_discover_length()
+            _content_length = self._io.do_discover_length(self.url)
             if _content_length is None:
                 raise ValueError(
                     "The HTTP server doesn't return the 'Content-Length' header."
@@ -167,12 +213,24 @@ class HTTPFile(io.IOBase):
         return self._content_length
 
     def readinto(self, b):
-        ...
+        # TODO: think about optimizing
+        result = self.read(len(b))
+        b[:] = result
+        return len(result)
 
     def seek(self, offset, whence=io.SEEK_SET):
         # TODO: not fully implemented
-        self._position += offset
-        ...
+        if whence == io.SEEK_SET:
+            # from the start of the stream.
+            assert offset >= 0
+            self._position = offset
+        elif whence == io.SEEK_CUR:
+            # from the current position
+            self._position += offset
+        elif whence == io.SEEK_END:
+            self._position = self.content_length + offset
+        else:
+            raise ValueError(f"Invalid value for 'whence': {whence}")
 
     def seekable(self):
         return True
@@ -229,36 +287,50 @@ def ranges_for_read(
         if end <= buffers[0].start:
             # case 1: we're completely to the left of the leftmost range
             buffers.add(Buffer(start, size))
-        else:
-            # dummy buffers, to see where we land
-            start_idx = buffers.bisect_left(Buffer(start, 0))
+            return buffers
 
-            if start < buffers[start_idx].start:
-                buffers.add(
-                    Buffer(
-                        start, min(end - start + 1, buffers[start_idx].start - start)
-                    )
+        if start >= buffers[-1].end:
+            # case 2: we're completely to the right of the rightmost range
+            buffers.add(Buffer(start, size))
+            return buffers
+
+        # dummy buffers, to see where we land
+        start_idx = buffers.bisect_left(Buffer(start, 0))
+
+        if start_idx == len(buffers):
+            # we start in the last buffer
+            if end < buffers[-1].end:
+                return buffers
+            else:
+                buffers.add(Buffer(buffers[-1].end, end - buffers[-1].end))
+                return buffers
+
+        if start < buffers[start_idx].start:
+            buffers.add(
+                Buffer(
+                    start, min(end - start + 1, buffers[start_idx].start - start)
                 )
+            )
 
-            end_idx = buffers.bisect_left(Buffer(end, 0)) - 1
-            if buffers[end_idx].end < end:
-                buffers.add(Buffer(buffers[end_idx].end, end - buffers[end_idx].end))
+        end_idx = buffers.bisect_left(Buffer(end, 0)) - 1
+        if buffers[end_idx].end < end:
+            buffers.add(Buffer(buffers[end_idx].end, end - buffers[end_idx].end))
+
+        start_idx = buffers.bisect_left(Buffer(start, 0))
+        end_idx = buffers.bisect_left(Buffer(end, 0)) - 1
+
+        i = 0
+        while not done(buffers, start, end, start_idx, end_idx):
+            # fill holes
+            for a, b in pairwise(buffers):
+                if a.end < b.start:
+                    buffers.add(Buffer(a.end, min(b.start - a.end, end - a.end)))
 
             start_idx = buffers.bisect_left(Buffer(start, 0))
             end_idx = buffers.bisect_left(Buffer(end, 0)) - 1
-
-            i = 0
-            while not done(buffers, start, end, start_idx, end_idx):
-                # fill holes
-                for a, b in pairwise(buffers):
-                    if a.end < b.start:
-                        buffers.add(Buffer(a.end, min(b.start - a.end, end - a.end)))
-
-                start_idx = buffers.bisect_left(Buffer(start, 0))
-                end_idx = buffers.bisect_left(Buffer(end, 0)) - 1
-                i += 1
-                if i > 100:
-                    raise RecursionError
+            i += 1
+            if i > 100:
+                raise RecursionError
 
     return buffers
 
