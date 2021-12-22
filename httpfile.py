@@ -61,17 +61,12 @@ class HTTPFileIO:
 
 
 class FileFileIO:
-    def do_read_ranges(self, buf, ranges: list[Buffer]):
-        results = []
-
-        for range_read in ranges:
-            buf.seek(range_read.start)
-            size = range_read.end - range_read.start
-            chunk = Buffer(range_read.start, size)
-            chunk.data = buf.read(size)
-            results.append(chunk)
-
-        return results
+    def do_read_ranges(self, buf: io.BytesIO, buffers: list[Buffer]):
+        for buffer in buffers:
+            if buffer._data is None:
+                buf.seek(buffer.start)
+                size = len(buffer)
+                buffer._data = buf.read(size)
 
 
 class HTTPFile(io.IOBase):
@@ -139,23 +134,24 @@ class HTTPFile(io.IOBase):
             end = self._position + size
 
         new_buffers = ranges_for_read(self._buffers, self._position, end)
+        # ---------------------
+        # this must be atomic !
+        # mutates buffer's data in place
         self._io.do_read_ranges(
             self.url, [buf for buf in new_buffers if buf._data is None]
         )
-        # ---------------------
-        # this must be atomic !
         self._buffers = new_buffers
-        result = self._build_result()
+        result = self._build_result(size)
         self._position += size
         # ---------------------
         return result
 
-    def _build_result(self, ranges: list[Buffer]) -> bytes:
-        result = []
-        for buf, range_ in zip(self._buffers, ranges):
-            # which is shorter, and is that OK?
-            result.append(buf.data[: range_.end])
-        return b"".join(result)
+    def _build_result(self, size) -> bytes:
+        start = self._position
+        start_idx = self._buffers.bisect_left(Buffer(start, 0))
+        end_idx = self._buffers.bisect_left(Buffer(start + size, 0))
+
+        return b"".join(b.data for b in self._buffers[start_idx:end_idx])
 
     @property
     def content_length(self) -> int:
