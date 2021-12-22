@@ -1,7 +1,7 @@
 """
 # httpfile
 
-This module provides a file-like object to bytes served over http.
+This module provides a file-like object to bytes served over HTTP.
 
 ## Limitations
 
@@ -16,27 +16,36 @@ import sortedcontainers
 import httpx
 
 __version__ = "1.0.0"
+logger = logging.getLogger(__name__)
 
 
 Client = httpx.Client | httpx.AsyncClient
 
 
-logger = logging.getLogger(__name__)
-
-
 class Buffer:
+    """
+    An in-memory buffer of bytes.
+    """
+
     def __init__(self, start: int, size: int, data: bytes | None = None):
         self.start = start
         self.size = size
-        assert size >= 0
+        if size < 0:
+            raise ValueError(
+                f"'httpfile.Buffer.size' must be non-negative. Got '{size}'"
+            )
+
         if data is not None:
-            assert len(data) == size
+            if len(data) != size:
+                raise ValueError(
+                    f"When providing data, the length must match 'size'. {len(data)} != {size}"
+                )
         self._data = data
 
     @property
     def data(self):
         if self._data is None:
-            raise ValueError("Accessing bytes before set")
+            raise ValueError("Accessing 'httpfile.Buffer.data' before it's been set.")
         return self._data
 
     @data.setter
@@ -52,7 +61,7 @@ class Buffer:
         return type(self) == type(other) and self.start == other.start
 
     def __repr__(self):
-        return f"Buffer<start={self.start}, end={self.end}, allocated={self._data is not None}>"
+        return f"Buffer<start={self.start}, end={self.end}, size={self.size}, allocated={self._data is not None}>"
 
     def __len__(self):
         return self.size
@@ -67,6 +76,15 @@ class Buffer:
 
 
 class HTTPFileIO:
+    """
+    Responsible for performing the requested I/O.
+
+    Parameters
+    ----------
+    client : httpx.Client
+        A (synchronous) httpx.Client to use for all operaitons.
+    """
+
     def __init__(self, session: Client | None = None):
         self.session: Client = session or httpx.Client()
 
@@ -82,7 +100,6 @@ class HTTPFileIO:
         return
 
     def do_discover_length(self, url: str) -> int:
-        # TODO: handle optional
         r = self.session.head(url)
         r.raise_for_status()
         return int(r.headers["content-length"])
@@ -105,18 +122,20 @@ class HTTPFile(io.IOBase):
 
     # Our internal bytes-management strategy consists of two abstractions
     # 1. sans-io: All network calls happen through an HTTPFileIO object.
-    #    This class is *only* concerned with managing positions and buffers
-    #    of bytes. All I/O is delegated
+    #    HTTPFile class is *only* concerned with managing positions and in-memory
+    #    buffers of bytes. All I/O is delegated.
     # 2. A sorted collection of sorted, non-overlapping buffers, representing
     #    ranges of requested data
-
-    # The state of this object is the *position* and its *buffers*.
+    # ---- State ---
+    # The state of this object consists of its
+    # 1. *position*, and
+    # 2. *buffers*
+    #
     # The *position* is a non-negative integer representing where
     # in the logical file stream we're at. All read operations will
     # move this position.
     # The *buffers* are a sorted collection of bytes.
-
-    # To illustrate point 2, consider this sequence
+    # To illustrate our buffers, consider this sequence of file operations:
     # >>> f = HTTPFile(...)
     # >>> f.seek(5)  # 1: move 5 bytes - position 5
     # >>> f.read(5)  # 2: read 5 bytes - bytes 5-10
@@ -141,8 +160,6 @@ class HTTPFile(io.IOBase):
     #   position: 0
     #   buffers: [b'11111', b'22222', b'33333']
 
-    # TODO: how to handle compaction / consolidation?
-
     def __init__(self, url: str, session: Client | None = None):
         self.url = url
         self._buffers: sortedcontainers.SortedList = sortedcontainers.SortedList()
@@ -151,32 +168,28 @@ class HTTPFile(io.IOBase):
         self._io: HTTPFileIO = HTTPFileIO(session)
 
     def read(self, size: int = -1) -> bytes:
-        # Cases
-        # 1. | start --- position --- to --- end |
-        # cases:
-        # 1. | start --- position --- end |
-        # 2. | position --- start --- end |
-        # 3. | start --- end --- position |
         if size == -1:
             end = self.content_length
         else:
             end = self._position + size
 
-        logger.warning("read %d - %d", self._position, end)
+        logger.debug("read %d - %d", self._position, end)
         new_buffers = ranges_for_read(self._buffers, self._position, end)
-        # if size == 512: breakpoint()
         # ---------------------
         # this must be atomic !
         # mutates buffer's data in place
-        self._io.do_read_ranges(
-            self.url, [buf for buf in new_buffers if buf._data is None]
-        )
+        self._io.do_read_ranges(self.url, [buf for buf in new_buffers])
         self._buffers = new_buffers
         result = self._build_result(size)
         assert len(result) == size
         self._position += size
         # ---------------------
         return result
+
+    def readinto(self, b):
+        result = self.read(len(b))
+        b[:] = result
+        return len(result)
 
     def _build_result(self, size) -> bytes:
         start = self._position
@@ -204,11 +217,7 @@ class HTTPFile(io.IOBase):
             else:
                 result.append(buf.data[: end - buf.end])
 
-        # if self._buffers[start_idx].start < start:
-        #     result.append(self._buffers[start_idx])
-
         return b"".join(result)
-        # return b"".join(b.data for b in self._buffers[start_idx:end_idx])
 
     @property
     def content_length(self) -> int:
@@ -223,14 +232,7 @@ class HTTPFile(io.IOBase):
 
         return self._content_length
 
-    def readinto(self, b):
-        # TODO: think about optimizing
-        result = self.read(len(b))
-        b[:] = result
-        return len(result)
-
     def seek(self, offset, whence=io.SEEK_SET):
-        # TODO: not fully implemented
         if whence == io.SEEK_SET:
             # from the start of the stream.
             assert offset >= 0
@@ -275,16 +277,6 @@ def pairwise(iterable):
     a, b = itertools.tee(iterable)
     next(b, None)
     return zip(a, b)
-
-
-def triplewise(iterable):
-    # New in Python 3.10
-    # pairwise('ABCDEFG') --> AB BC CD DE EF FG
-    a, b, c = itertools.tee(iterable, 3)
-    next(b, None)
-    next(c, None)
-    next(c, None)
-    return zip(a, b, c)
 
 
 def ranges_for_read(
