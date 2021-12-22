@@ -230,29 +230,27 @@ def ranges_for_read(
     if len(buffers) == 0:
         buffers.add(Buffer(start, size))
     else:
-        # if start_idx == 0:
-        # two cases:
-        # breakpoint()
         if end <= buffers[0].start:
             # case 1: we're completely to the left of the leftmost range
             buffers.add(Buffer(start, size))
-            # print(result)
         else:
             # dummy buffers, to see where we land
             start_idx = buffers.bisect_left(Buffer(start, 0))
 
             if start < buffers[start_idx].start:
-                buffers.add(Buffer(start, min(end - start + 1, buffers[start_idx].start - start)))
+                buffers.add(
+                    Buffer(
+                        start, min(end - start + 1, buffers[start_idx].start - start)
+                    )
+                )
 
             end_idx = buffers.bisect_left(Buffer(end, 0)) - 1
             if buffers[end_idx].end < end:
                 buffers.add(Buffer(buffers[end_idx].end, end - buffers[end_idx].end))
 
-            # dummy buffers, to see where we land
             start_idx = buffers.bisect_left(Buffer(start, 0))
             end_idx = buffers.bisect_left(Buffer(end, 0)) - 1
 
-            # TODO: test / handle cases with len(buffers) < 3
             i = 0
             while not done(buffers, start, end, start_idx, end_idx):
                 # fill holes
@@ -260,43 +258,11 @@ def ranges_for_read(
                     if a.end < b.start:
                         buffers.add(Buffer(a.end, min(b.start - a.end, end - a.end)))
 
-                # fill end
-                start_idx = buffers.bisect_left(
-                    Buffer(start, 0)
-                )  # dummy buffers, to see where we land
+                start_idx = buffers.bisect_left(Buffer(start, 0))
                 end_idx = buffers.bisect_left(Buffer(end, 0)) - 1
                 i += 1
                 if i > 100:
                     raise RecursionError
-
-
-            # # case 2: we start left of buffers, but overlap some.
-
-            # # print(result)
-            # # Now figure out what we need for the rest, based on the end_idx.
-            # assert end_idx >= 1
-            # # need to slurp up all the intermediate buffers, while also
-            # # adding reads for "holes".
-            # last_already_read = buffers[start_idx].end
-
-            # for buf in buffers[start_idx:end_idx]:
-            #     if last_already_read <= buf.start:
-            #         # we have a hole to fill
-            #         # result.add(Buffer(True, last_already_read, buf.start))
-            #         # print(result)
-            #         assert 0
-
-            #     # result.add(Buffer(False, buf.start, min(end, buf.end)))
-            #     # print(result)
-
-            # # we might have some left over here
-            # if buffers[-1].end < end:
-            #     # ijalei.sjfa I don't like this
-            #     # we have state in two places right now
-            #     # think about alterantives.
-            #     # result.add(RangeRead(True, result[-1].end, end))
-            #     # print(result)
-            #     assert 0
 
     return buffers
 
@@ -305,5 +271,5 @@ def done(buffers, start, end, start_idx, end_idx):
     return (
         (buffers[start_idx].start <= start)
         and (end <= buffers[end_idx].end)
-        and all(a.end == b.start for a, b in pairwise(buffers[start_idx:end_idx + 1]))
+        and all(a.end == b.start for a, b in pairwise(buffers[start_idx : end_idx + 1]))
     )
