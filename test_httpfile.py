@@ -4,19 +4,11 @@ import string
 import sortedcontainers
 import httpx
 import pytest
-from sortedcontainers import sortedlist
-from sortedcontainers.sortedlist import SortedList
 from werkzeug.wrappers import Request, Response
 import httpfile
 
 
-@pytest.mark.parametrize(
-    "start, end, expected",
-    [
-        (0, 1, [(0, 1)]),
-        (1, 5, [(1, 5)]),
-    ],
-)
+@pytest.mark.parametrize("start, end, expected", [(0, 1, [(0, 1)]), (1, 5, [(1, 5)])])
 def test_ranges_for_reads_empty(start, end, expected):
     buffers = sortedcontainers.SortedList()
     result = httpfile.ranges_for_read(buffers, start, end)
@@ -123,12 +115,15 @@ def test_build_result_multi():
     f.seek(1)
     assert f._build_result(14) == b"bcdefghijklmno"
 
+
 def test_build_result_2():
     f = httpfile.HTTPFile("")
-    f._buffers = sortedcontainers.SortedList([
-        httpfile.Buffer(start=0, size=8, data=b"abcdefgh"),
-        httpfile.Buffer(start=8, size=8, data=b"ijklmnop"),
-    ])
+    f._buffers = sortedcontainers.SortedList(
+        [
+            httpfile.Buffer(start=0, size=8, data=b"abcdefgh"),
+            httpfile.Buffer(start=8, size=8, data=b"ijklmnop"),
+        ]
+    )
     f.seek(0)
     result = f._build_result(16)
     assert result == b"abcdefghijklmnop"

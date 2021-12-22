@@ -1,5 +1,4 @@
 import io
-import typing
 import itertools
 import logging
 
@@ -178,20 +177,20 @@ class HTTPFile(io.IOBase):
         if start_idx == end_idx:
             b = self._buffers[start_idx]
             assert b.end >= (start + size)
-            result.append(b.data[start - b.start:start - b.start + size])
+            result.append(b.data[start - b.start : start - b.start + size])
 
         else:
             buf = self._buffers[start_idx]
-            result.append(buf.data[start - buf.start:])
+            result.append(buf.data[start - buf.start :])
 
-            for buf in self._buffers[start_idx + 1:end_idx]:
+            for buf in self._buffers[start_idx + 1 : end_idx]:
                 result.append(buf.data)
 
             buf = self._buffers[end_idx]
             if buf.end == end:
                 result.append(buf.data)
             else:
-                result.append(buf.data[:end - buf.end])
+                result.append(buf.data[: end - buf.end])
 
         # if self._buffers[start_idx].start < start:
         #     result.append(self._buffers[start_idx])
@@ -307,9 +306,7 @@ def ranges_for_read(
 
         if start < buffers[start_idx].start:
             buffers.add(
-                Buffer(
-                    start, min(end - start + 1, buffers[start_idx].start - start)
-                )
+                Buffer(start, min(end - start + 1, buffers[start_idx].start - start))
             )
 
         end_idx = buffers.bisect_left(Buffer(end, 0)) - 1
